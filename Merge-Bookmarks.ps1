@@ -1,100 +1,152 @@
-# Function to process bookmarks and add them to a unified collection
-function Process-Bookmarks {
-    param (
-        [Parameter(Mandatory = $true)]
-        [array]$Children,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$CurrentPath
-    )
+# Define the paths to the bookmarks JSON files
+$bookmarkFilePaths = @(
+    "./TestFiles/Edge_bookmarks",
+    "./TestFiles/Google_bookmarks"
+)
+# Define the path for the new bookmarks JSON file
+$newBookmarkFilePath = "./TestFiles/bookmarks"
 
-    foreach ($Child in $Children) {
-        $NewPath = if ($CurrentPath -ne "") {
-                        "$CurrentPath\$($child.Name)"
-                    }
-                    else {
-                        $child.Name
-                    }
-        
-        if ($child.type -eq "folder" -and $Child.Children) {
-            Process-Bookmarks -Children $Child.Children -CurrentPath $NewPath
+# Check if the bookmarks JSON file already exists
+if (-Not (Test-Path -Path $newBookmarkFilePath)) {
+    # Create an empty structure if the file does not exist
+    $emptyRoots = [PSCustomObject]@{
+        bookmark_bar = [PSCustomObject]@{
+            type        = "folder"
+            name        = "Favorites bar"
+            children    = @()
+            date_added  = (Get-Date).ToFileTimeUtc().ToString()
+            guid        = [guid]::NewGuid().ToString()
+            id          = "1"
+            date_last_used = "0"
+            date_modified = (Get-Date).ToFileTimeUtc().ToString()
+            source      = "user"
         }
-        elseif ($child.type -eq "url") {
-            $Child | Add-Member -NotePropertyName "Path" -NotePropertyValue $CurrentPath -Force
-            [void]$AllBookmarks.Add($Child)
+        other = [PSCustomObject]@{
+            type        = "folder"
+            name        = "Other favorites"
+            children    = @()
+            date_added  = (Get-Date).ToFileTimeUtc().ToString()
+            guid        = [guid]::NewGuid().ToString()
+            id          = "2"
+            date_last_used = "0"
+            date_modified = "0"
+            source      = "user"
+        }
+        synced = [PSCustomObject]@{
+            type        = "folder"
+            name        = "Mobile favorites"
+            children    = @()
+            date_added  = (Get-Date).ToFileTimeUtc().ToString()
+            guid        = [guid]::NewGuid().ToString()
+            id          = "3"
+            date_last_used = "0"
+            date_modified = "0"
+            source      = "user"
         }
     }
+    
+    $emptyBookmarksJson = [PSCustomObject]@{
+        checksum = ""
+        roots    = $emptyRoots
+        version  = 1
+    } | ConvertTo-Json -Depth 20
+
+    # Save the empty structure to the new file
+    $emptyBookmarksJson | Set-Content -Path $newBookmarkFilePath
 }
 
-# Function to merge bookmarks into the Edge default bookmark file
-function Merge-Bookmarks {
+# Load the existing bookmarks JSON file
+$bookmarksJson = Get-Content -Path $newBookmarkFilePath -Raw | ConvertFrom-Json
+
+# Initialize an empty array to store the imported children from all files
+$allImportedChildren = $bookmarksJson.roots.bookmark_bar.children
+
+# Define a function to recursively copy folders and bookmarks
+function Copy-Bookmarks {
     param (
         [Parameter(Mandatory = $true)]
-        [string]$InputFile
+        [array]$children
     )
 
-    # Set default Edge bookmarks file path
-    #$OutputFile = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Bookmarks"
-    $OutputFile = ".\TestFiles\Bookmarks"
-
-    # Create a bookmarks file with default folder structure if it doesn't exist
-    if (-not (Test-Path -Path $OutputFile)) {
-        $EmptyBookmarks = [ordered]@{
-            checksum = "";
-            roots = [ordered]@{
-                bookmark_bar = [ordered]@{
-                    children = @();
-                    name = "Bookmarks bar";
-                    type = "folder"
-                };
-                other = [ordered]@{
-                    children = @();
-                    name = "Other bookmarks";
-                    type = "folder"
-                };
-                synced = [ordered]@{
-                    children = @();
-                    name = "Mobile bookmarks";
-                    type = "folder"
-                }
-            };
-            version = 1
-        }
-        $EmptyBookmarks | ConvertTo-Json -Depth 10 | Set-Content -Path $OutputFile
-    }
-
-    # Read the input bookmarks file
-    if (Test-Path -Path $InputFile) {
-        $BookmarksData = Get-Content -Path $InputFile | ConvertFrom-Json 
-        $AllBookmarks = New-Object System.Collections.ArrayList
-        
-        foreach ($RootKey in $BookmarksData.roots.PSObject.Properties.Name) {
-            $Root = $BookmarksData.roots.$RootKey
-            
-            if ($Root.children -ne $null) {
-                Process-Bookmarks -Children $Root.Children -CurrentPath $Root.Name
+    $newChildren = @()
+    foreach ($child in $children) {
+        if ($child.type -eq "url") {
+            # If it's a bookmark, copy it to the new structure
+            $newChild = [PSCustomObject]@{
+                type        = "url"
+                name        = $child.name
+                url         = $child.url
+                date_added  = $child.date_added
+                guid        = $child.guid
+                id          = $child.id
+                date_last_used = $child.date_last_used
+                visit_count = $child.visit_count
+                source      = $child.source
             }
+            $newChildren += $newChild
+        } elseif ($child.type -eq "folder") {
+            # If it's a folder, copy it and process its children recursively
+            $newFolder = [PSCustomObject]@{
+                type        = "folder"
+                name        = $child.name
+                date_added  = $child.date_added
+                guid        = $child.guid
+                id          = $child.id
+                children    = @()
+                date_last_used = $child.date_last_used
+                date_modified = $child.date_modified
+                source      = $child.source
+            }
+            if ($child.children.Count -gt 0) {
+                $newFolder.children = Copy-Bookmarks -children $child.children
+            }
+            $newChildren += $newFolder
         }
     }
-    else {
-        Write-Warning "File $InputFile not found. Exiting..."
-        return
-    }
-
-    # Convert the collected bookmarks into a new JSON structure with "Imported Bookmarks!"
-    $ExistingBookmarks = Get-Content -Path $OutputFile | ConvertFrom-Json
-    $ImportedFolder = [ordered]@{
-        name = [System.IO.Path]::GetFileNameWithoutExtension($InputFile);
-        type = "folder";
-        children = $AllBookmarks
-    }
-    $ExistingBookmarks.roots.bookmark_bar.children += ,$ImportedFolder
-
-    # Export the merged bookmarks to the output file
-    $ExistingBookmarks | ConvertTo-Json -Depth 10 | Set-Content -Path $OutputFile
-    Write-Output "Bookmarks imported successfully into $OutputFile"
+    return $newChildren
 }
 
-# Example usage
-$InputFile = ".\TestFiles\Google_Bookmarks"
-Merge-Bookmarks -InputFile $InputFile
+# Iterate through each bookmark file and parse the structure
+foreach ($bookmarkFilePath in $bookmarkFilePaths) {
+    # Load and parse the JSON file
+    $fileBookmarksJson = Get-Content -Path $bookmarkFilePath -Raw | ConvertFrom-Json
+
+    # Copy the original folder and bookmark structure
+    $importedChildren = @()
+    $roots = $fileBookmarksJson.roots
+    if ($roots.bookmark_bar.children.Count -gt 0) {
+        $importedChildren += Copy-Bookmarks -children $roots.bookmark_bar.children
+    }
+    if ($roots.other.children.Count -gt 0) {
+        $importedChildren += Copy-Bookmarks -children $roots.other.children
+    }
+    if ($roots.synced.children.Count -gt 0) {
+        $importedChildren += Copy-Bookmarks -children $roots.synced.children
+    }
+
+    # Add a new top-level folder named after the input file
+    $newFolderName = [System.IO.Path]::GetFileNameWithoutExtension($bookmarkFilePath)
+    $newFolder = [PSCustomObject]@{
+        type        = "folder"
+        name        = "$newFolderName Imported"
+        date_added  = (Get-Date).ToFileTimeUtc().ToString()
+        guid        = [guid]::NewGuid().ToString()
+        id          = [guid]::NewGuid().ToString()
+        children    = $importedChildren
+        date_last_used = "0"
+        date_modified = (Get-Date).ToFileTimeUtc().ToString()
+        source      = "user"
+    }
+
+    # Add the imported children from this file to the overall collection
+    $allImportedChildren += $newFolder
+}
+
+# Update the roots object with the imported folders
+$bookmarksJson.roots.bookmark_bar.children = $allImportedChildren
+
+# Create a new JSON object with the updated roots
+$newBookmarksJson = $bookmarksJson | ConvertTo-Json -Depth 20
+
+# Save the modified bookmarks JSON to a new file
+$newBookmarksJson | Set-Content -Path $newBookmarkFilePath
